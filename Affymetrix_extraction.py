@@ -14,27 +14,16 @@ os.system(command="export PATH="+repopath+"aptools/bin:$PATH; ./extract_chp.sh")
 os.chdir(repopath+"chp_extracted")
 chpfile_list = os.listdir()
 
-
-# os.chdir(repopath + "chp_extracted")
-# file_list = os.listdir()
-# celfile_list = []
-# mas5file_list =[]
-# for file in file_list:
-#     if "CEL" in file:
-#         celfile_list.append(file)
-#     elif "mas5" in file:
-#         mas5file_list.append(file)
-
-
 # %% split all of the chp files into a dict with the key being the cancer type for easier looping
+
 def get_filepath_from_accession(accession, file_list):
     return next((filepath for filepath in file_list if accession in filepath))
 
 chpfile_dict = defaultdict(list)
-sample_info_df = pd.read_csv("../sample.csv")
+sample_info_df = pd.read_csv(repopath+"auxiliary_files/samples.csv")
 for title, accession in zip(sample_info_df["Title"], sample_info_df["Accession"]):
     cancer_type = title.split(",")[1].split("-")[0].strip()
-    chpfile_dict[cancer_type].append(get_filepath_from_accession(accession, celfile_list))
+    chpfile_dict[cancer_type].append(get_filepath_from_accession(accession, chpfile_list))
 # %% load in the probeset tsv data into a dataframe
 os.chdir(repopath)
 probeset_df = pd.read_csv("./auxiliary_files/GPL570_probeset.tsv", sep="\t")
