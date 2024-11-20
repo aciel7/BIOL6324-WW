@@ -55,6 +55,9 @@ signal_list = []
 apm_list = []  # absent, present, missing list
 target_list = []
 os.chdir(repopath+"chp_extracted/")
+signal_dict = defaultdict(list)
+apm_dict = defaultdict(list)
+target_dict = defaultdict(list)
 
 # I hate pandas dataframes; imports all of the files
 for key in tqdm(chpfilepath_dict.keys()):
@@ -62,31 +65,60 @@ for key in tqdm(chpfilepath_dict.keys()):
         df = pd.read_csv(filepath, sep="\t")
         df.index = df["Probe Set Name"]
         df.drop(df.loc["Center X":]["Probe Set Name"], inplace=True)
-        ctrl_vals = df.loc[control_probes]
-        signal_list.append(df["Signal"].to_numpy().astype(float))
-        apm_list.append(df["Detection"])
-        target_list.append(key)
-        # print(df["Probe Set Name"])
+        # ctrl_vals = df.loc[control_probes]
+        # signal_list.append(df["Signal"].to_numpy().astype(float))
+        # apm_list.append(df["Detection"])
+        # target_list.append(key)
+        # signal_dict[key].append(df["Signal"].to_numpy().astype(float))
+        apm_dict[key].append(df["Detection"])
+        target_dict[key].append(key)
         
-signal_array = np.array(signal_list)
-apm_array = np.array(apm_list)
+# signal_array = np.array(signal_list)
+# apm_array = np.array(apm_list)
 
 del apm_list
 del signal_list
 gc.collect()
 # %% Mutual information
-probe_mi_list = []
-for i in tqdm(range(apm_array.shape[1])):
-    probe_mi_list.append(metrics.mutual_info_score(apm_array[:, i], target_list))
+import copy
+
+def subsample_data(apm_dict, targ_dict, key1, key2 = "control"):
+    data =  copy.copy(apm_dict[key1])
+    data.extend(apm_dict[key2])
+    data = np.array(data)
+    targs = copy.copy(targ_dict[key1])
+    targs.extend(targ_dict[key2])
+    targs = np.array(targs)
+    return data, targs
+
+sub_apm, sub_targets = subsample_data(apm_dict, target_dict, "colorectal cancer", "control")
+
+def get_mi_data(key1, apm_dict, targ_dict, key2 = "control"):
+    data =  copy.copy(apm_dict[key1])
+    data.extend(apm_dict[key2])
+    data = np.array(data)
+    print(data.shape)
+    targs = copy.copy(targ_dict[key1])
+    targs.extend(targ_dict[key2])
+    targs = np.array(targs)
+    probe_mi_list = []
+    for i in tqdm(range(data.shape[1])):
+        probe_mi_list.append(metrics.mutual_info_score(data[:, i], targs))
+    return probe_mi_list
+
+for key in apm_dict.keys():
+    if key != "control":
+        probe_mi_list = get_mi_data("colorectal cancer", apm_dict, target_dict)
+        break
 # %%
 ranked_probe_importance_indices = np.argsort(probe_mi_list, )[::-1]
 ranked_probe_importances = np.sort(probe_mi_list, )[::-1]
-most_important_probes = df["Probe Set Name"].iloc[ranked_probe_importance_indices[:100]].to_numpy()
-ranked_probe_importances = ranked_probe_importances[:100]
+most_important_probes = df["Probe Set Name"].iloc[ranked_probe_importance_indices[:20]].to_numpy()
+ranked_probe_importances = ranked_probe_importances[:20]
 for probe, importance in zip(most_important_probes, ranked_probe_importances):
     psdf = probeset_df.loc[probeset_df["ID"] == probe]
     print("Importance:  " + str(importance))
-    print(psdf.at["Gene Title"])
+    print(psdf["Gene Title"].to_numpy())
     print()
 # %% organizes the data into training and test
 # TODO: add shuffling, cross validation
