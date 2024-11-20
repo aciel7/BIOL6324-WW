@@ -120,15 +120,12 @@ for key in tqdm(data.keys()):
     if key != "control":
         sub_apm, sub_targets = data[key]
         probe_mi_dict[key] = get_mi_data(sub_apm, sub_targets)
-        break
 del sub_apm
 del sub_targets
 gc.collect()
 # %% Print interesting things about mutual information
 
-
 num_most_important = 10
-
 for key in probe_mi_dict.keys():
     ranked_probe_importance_indices = np.argsort(probe_mi_dict[key])[::-1]
     ranked_probe_importances = np.sort(probe_mi_dict[key])[::-1]
@@ -139,7 +136,7 @@ for key in probe_mi_dict.keys():
     gene_symbols = []
     entrez_ids = []
     importances = []
-    table_header = ["importance ranking", "Gene Symbol", "ENTREZ gene ID"]
+    table_header = ["Importance", "Gene Symbol", "ENTREZ ID"]
     for probe, importance in zip(most_important_probes, ranked_probe_importances):
         psdf = probeset_df.loc[probeset_df["ID"] == probe]
         if type(psdf["Gene Symbol"].to_numpy()[0]) != float:
@@ -152,28 +149,117 @@ for key in probe_mi_dict.keys():
     print(key)
     print(tabulate(np.array([importances, gene_symbols, entrez_ids]).T, headers=table_header))
     print()
-# %% organizes the data into training and test
-# TODO: add shuffling, cross validation
-import random
-
-# random.shuffle(apm_list)
-le = LabelEncoder()
-le.fit(target_list)
-enc = OrdinalEncoder()
-enc.fit(apm_list)
-targs = le.transform(target_list)
-data = enc.transform(apm_list, ).astype(np.int8)
-
+    
 # %%
-X_train, X_test, y_train, y_test = train_test_split(data, targs, test_size=.2, shuffle=True)
-# %% XGBOOST 
-bst = XGBClassifier(n_estimators=100, max_depth=20, learning_rate=.1, objective='binary:logistic', n_jobs=21)
-bst.fit(X_train, y_train)
-preds = bst.predict(X_test)
-y_pred = le.inverse_transform(preds)
-y_true = le.inverse_transform(y_test)
-# %%
-metrics.accuracy_score(y_true, y_pred)
-# %% Plot confusion matrix
-metrics.ConfusionMatrixDisplay.from_predictions(y_true, y_pred, xticks_rotation="vertical")
-# metrics.RocCurveDisplay.from_predictions(y_test, preds, plot_chance_level=True,  )
+from sklearn.utils.class_weight import compute_sample_weight
+from sklearn.neural_network import MLPClassifier
+import tensorflow as tf
+from tensorflow import keras
+from sklearn.preprocessing import StandardScaler
+
+def run_classifier(sub_data, sub_targets):
+    le = LabelEncoder()
+    le.fit(sub_targets)
+    enc = OrdinalEncoder()
+    enc.fit(sub_data)
+    targs = le.transform(sub_targets)
+    data = enc.transform(sub_data,).astype(np.int8)
+    X_train, X_test, y_train, y_test = train_test_split(data, targs, test_size=.2, shuffle=True)
+    sample_weights = compute_sample_weight(class_weight='balanced', y=y_train )
+    bst = XGBClassifier(n_estimators=10, max_depth=10, learning_rate=.1, objective='binary:logistic', n_jobs=21,tree_method="hist", device="cuda" )
+    bst.fit(X_train, y_train, sample_weight = sample_weights)
+    preds = bst.predict(X_test)
+    y_pred = le.inverse_transform(preds)
+    y_true = le.inverse_transform(y_test)
+    metrics.accuracy_score(y_true, y_pred)
+    metrics.ConfusionMatrixDisplay.from_predictions(y_true, y_pred, xticks_rotation="vertical")
+
+def run_mlpc(sub_data, sub_targets):
+    le = LabelEncoder()
+    le.fit(sub_targets)
+    enc = OrdinalEncoder()
+    enc.fit(sub_data)
+    targs = le.transform(sub_targets)
+    data = enc.transform(sub_data,).astype(np.int8)
+    X_train, X_test, y_train, y_test = train_test_split(data, targs, test_size=.2, shuffle=True)
+    sample_weights = compute_sample_weight(class_weight='balanced', y=y_train )
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+
+
+    mlpc = MLPClassifier(solver='adam', alpha=1e-4, hidden_layer_sizes=(80, 10), random_state=1)
+    mlpc.fit(X_train, y_train)
+    preds = mlpc.predict(X_test)
+    y_pred = le.inverse_transform(preds)
+    y_true = le.inverse_transform(y_test)
+    metrics.accuracy_score(y_true, y_pred)
+    metrics.ConfusionMatrixDisplay.from_predictions(y_true, y_pred, xticks_rotation="vertical")
+
+
+
+def run_tf(sub_data, sub_targets):
+    le = LabelEncoder()
+    le.fit(sub_targets)
+    enc = OrdinalEncoder()
+    enc.fit(sub_data)
+
+
+    
+    targs = le.transform(sub_targets)
+    data = enc.transform(sub_data,).astype(np.int8)
+    x_train, x_test, y_train, y_test = train_test_split(data, targs, test_size=.2, shuffle=True)
+    y_train = y_train.reshape(-1, 1)
+    y_test = y_test.reshape(-1, 1)
+    
+    
+    neg, pos = np.bincount(targs)
+    total = neg + pos
+    initial_bias = np.log([pos/neg])
+    output_bias = tf.keras.initializers.Constant(initial_bias)
+
+    model = tf.keras.models.Sequential([
+      tf.keras.layers.Dense(1024, activation='relu'),
+      tf.keras.layers.Dense(512, activation='relu'),
+      tf.keras.layers.Dense(512, activation='relu'),
+      tf.keras.layers.Dense(512, activation='relu'),
+      tf.keras.layers.Dense(128, activation='relu'),
+      tf.keras.layers.Dense(128, activation='relu'),
+      tf.keras.layers.Dense(128, activation='relu'),
+      keras.layers.Dense(1, activation='sigmoid', bias_initializer=output_bias),      
+    ])
+    
+    loss_fn = tf.keras.losses.BinaryCrossentropy()
+    
+    METRICS = [
+      keras.metrics.BinaryCrossentropy(name='cross entropy'),  # same as model's loss
+      keras.metrics.MeanSquaredError(name='Brier score'),
+      keras.metrics.TruePositives(name='tp'),
+      keras.metrics.FalsePositives(name='fp'),
+      keras.metrics.TrueNegatives(name='tn'),
+      keras.metrics.FalseNegatives(name='fn'),
+      keras.metrics.BinaryAccuracy(name='accuracy'),
+      keras.metrics.Precision(name='precision'),
+      keras.metrics.Recall(name='recall'),
+      keras.metrics.AUC(name='auc'),
+      keras.metrics.AUC(name='prc', curve='PR'), # precision-recall curve
+]
+
+    model.compile(metrics=METRICS, optimizer="adam", loss = loss_fn)
+    model.fit(x_train, y_train, epochs=5)
+    model.evaluate(x_test,  y_test, verbose=1)
+
+    preds = model.predict(x_test)
+    print(preds.shape)
+    y_pred = le.inverse_transform(np.round(preds).astype(int).reshape(-1))
+    y_true = le.inverse_transform(y_test.reshape(-1))
+    metrics.accuracy_score(y_true, y_pred)
+    metrics.ConfusionMatrixDisplay.from_predictions(y_true, y_pred, xticks_rotation="vertical")
+    return np.round(preds).astype(int).reshape(-1)
+
+for key in tqdm(data.keys()):
+    if key != "control":
+        sub_data, sub_targets = data[key]
+        # run_classifier(sub_data, sub_targets)
+        preds = run_tf(sub_data, sub_targets)
+        break
+
