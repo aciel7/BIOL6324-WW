@@ -14,6 +14,9 @@ from xgboost import XGBClassifier
 from sklearn import metrics
 from sklearn.decomposition import PCA
 import gc
+from tabulate import tabulate
+import copy
+
 # %% script to dump all chp files to tsv plaintext
 os.chdir(repopath)
 os.system(command="export PATH="+repopath+"aptools/bin:$PATH; ./extract_chp.sh")
@@ -75,65 +78,80 @@ for key in tqdm(chpfilepath_dict.keys()):
         # signal_dict[key].append(df["Signal"].to_numpy().astype(float))
         apm_dict[key].append(df["Detection"])
         target_dict[key].append(key)
-        
+    apm_dict[key] = np.array(apm_dict[key])
+    target_dict[key] = np.array(target_dict[key])
 # signal_array = np.array(signal_list)
 # apm_array = np.array(apm_list)
 
-del df
-del apm_list
-del signal_list
+# %% this class makes managing the data much easier
+
+
+class data_class:
+    def __init__(self, apm_dict, target_dict):
+        self.apm = apm_dict
+        self.target = target_dict        
+    def __getitem__(self, key):
+        sub_data = np.append(self.apm[key], self.apm["control"], axis = 0)
+        sub_targets = np.append(self.target[key], self.target["control"])
+        return sub_data, sub_targets
+    def keys(self):
+        return self.apm.keys()
+
+
+data = data_class(apm_dict, target_dict)
+
+
+del target_dict
+del apm_dict
 gc.collect()
 
 
-# %% sub sample the data into two categories e.g. "control" and "bladder cancer"
-import copy
 
-def subsample_data(apm_dict, targ_dict, key1, key2 = "control"):
-    data =  copy.copy(apm_dict[key1])
-    data.extend(apm_dict[key2])
-    data = np.array(data)
-    targs = copy.copy(targ_dict[key1])
-    targs.extend(targ_dict[key2])
-    targs = np.array(targs)
-    return data, targs
-
-sub_apm, sub_targets = subsample_data(apm_dict, target_dict, "colorectal cancer", "control")
-
-
-# %% Get Mutual information
+# %% Get Mutual information for each cancer/control combination
 def get_mi_data(data, targs):
     probe_mi_list = []
     for i in tqdm(range(data.shape[1]), leave=False):
         probe_mi_list.append(metrics.mutual_info_score(data[:, i], targs))
     return probe_mi_list
 
-probe_mi_dict = defaultdict(list)
-for key in tqdm(apm_dict.keys()):
+
+probe_mi_dict = {}
+for key in tqdm(data.keys()):
     if key != "control":
-        sub_apm, sub_targets = subsample_data(apm_dict, target_dict, key, "control")
+        sub_apm, sub_targets = data[key]
         probe_mi_dict[key] = get_mi_data(sub_apm, sub_targets)
-        
+        break
+del sub_apm
+del sub_targets
+gc.collect()
 # %% Print interesting things about mutual information
+
 
 num_most_important = 10
 
-for key in tqdm(probe_mi_dict.keys()):
-    ranked_probe_importance_indices = np.argsort(probe_mi_dict[key] )[::-1]
-    ranked_probe_importances = np.sort(probe_mi_dict[key] )[::-1]
+for key in probe_mi_dict.keys():
+    ranked_probe_importance_indices = np.argsort(probe_mi_dict[key])[::-1]
+    ranked_probe_importances = np.sort(probe_mi_dict[key])[::-1]
     most_important_probes = df["Probe Set Name"].iloc[ranked_probe_importance_indices[:2000]].to_numpy()
     ranked_probe_importances = ranked_probe_importances[:2000]
     
     i = 0
-    for  probe, importance in zip(most_important_probes, ranked_probe_importances):
+    gene_symbols = []
+    entrez_ids = []
+    importances = []
+    table_header = ["importance ranking", "Gene Symbol", "ENTREZ gene ID"]
+    for probe, importance in zip(most_important_probes, ranked_probe_importances):
         psdf = probeset_df.loc[probeset_df["ID"] == probe]
-        if psdf["Gene Symbol"] != np.nan:
-            print("Importance:  " + str(importance))
-            print(psdf["Gene Symbol"].to_numpy()[0])
-            print(psdf["ENTREZ_GENE_ID"].to_numpy()[0])
-            print()
-            i+=1
+        if type(psdf["Gene Symbol"].to_numpy()[0]) != float:
+            importances.append(importance)
+            gene_symbols.append(psdf["Gene Symbol"].to_numpy()[0])
+            entrez_ids.append(psdf["ENTREZ_GENE_ID"].to_numpy()[0])
+            i += 1
         if i == num_most_important:
             break
+    print(key)
+    print(tabulate(np.array([importances, gene_symbols, entrez_ids]).T, headers=table_header))
+    print()
 # %% organizes the data into training and test
 # TODO: add shuffling, cross validation
 import random
